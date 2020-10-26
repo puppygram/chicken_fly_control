@@ -1,0 +1,771 @@
+---
+title: "Chicken fly control analysis"
+author: "Hannah Phillips"
+date: "8/24/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#library(nptest)
+library(readxl)
+library(tidyverse)
+library(glmmTMB) #glmm
+library(DHARMa) #test dispersion
+library(emmeans)
+library(extrafont)
+library(psych) #describe
+library(lme4)
+library(ggsci) #plot colors (scale_color_npg())
+library(NSM3)
+library(cowplot)
+
+
+theme_set(
+  theme_bw() +
+    theme(
+      plot.title = element_text(hjust = .5),
+      legend.key.width = unit(1.5, "cm"),
+      axis.text.y = element_text(size = 10, colour = "black"),
+      axis.text.x = element_text(size = 10, colour = "black"),
+      axis.title = element_text(size = 12),
+      legend.text = element_text(size = 12),
+      legend.title = element_text(size = 12),
+      text = element_text(family = "Arial")
+    )
+)
+```
+
+# Pupae data
+```{r}
+dat.fly <- 
+  read_excel("face_fly_pupae_data.xlsx") %>% 
+  filter(Trt != "Wandering_control" & is.na(Comments)) %>%
+  mutate_at(vars(Trt, Pat, Rep), as.factor) %>%
+  mutate(Recovered = Pupa + Maggots) %>%
+  dplyr::select(-c(Comments)) %>%
+  mutate(daysInGreenhouse = countDate - endDate)
+  
+```
+
+## Histogram and descriptive
+```{r}
+ggplot(dat.fly, aes(Recovered)) +
+  geom_histogram()
+
+age <- 
+  dat.fly %>%
+  group_by(Rep) %>%
+  slice(1)
+
+describe(age$Age)
+```
+
+## Model for pupae
+```{r}
+#model
+model.fly <- 
+  glmmTMB(
+    cbind(Recovered, 100 - Recovered) ~ Trt + Rep + (1|Trt:Rep),
+    family = betabinomial(),
+    verbose = F, 
+    REML = F,
+    data = dat.fly
+  )
+
+#chi-square tests
+car::Anova(model.fly)
+
+#summary 
+summary(model.fly)
+
+#LSMs
+emmeans(model.fly, "Trt", type = "response")
+
+emmeans(model.fly, "Rep", type = "response")
+
+#pairwise for trt
+confint(contrast(emmeans(model.fly, "Trt", type = "response", transform = "log"), ratio = T, method = "pairwise"))
+
+confint(contrast(emmeans(model.fly, "Trt", type = "response", transform = "log"), ratio = T, method = "revpairwise"))
+
+#pairwise for rep
+confint(contrast(emmeans(model.fly, "Rep", type = "response", transform = "log"), ratio = T, method = "pairwise"))
+
+confint(contrast(emmeans(model.fly, "Rep", type = "response", transform = "log"), ratio = T, method = "revpairwise"))
+
+#p-values
+contrast(emmeans(model.fly, "Trt", type = "response", transform = "log"), ratio = T, method = "pairwise")
+
+contrast(emmeans(model.fly, "Rep", type = "response", transform = "log"), ratio = T, method = "pairwise")
+```
+
+### Figure
+```{r}
+#predict Y
+predict <- 
+  emmip(
+    model.fly, 
+    ~ Trt,
+    CIs = TRUE, 
+    plotit = FALSE, 
+    type = "response",
+    level = .95
+  )
+
+predict$Trt <- factor(predict$Trt, levels = c("Greenhouse", "Control", "Low", "High"))
+
+{
+  ggplot(data = predict, 
+         aes(x = Trt, y = yvar*100, ymin = LCL*100, ymax = UCL*100)) + 
+    
+    geom_col(fill = "grey50") +
+    
+    geom_errorbar(width = .3, size = .5) +
+    
+    labs(
+      x = "Treatment", 
+      y = "Survival rate, %"
+    ) +
+    
+    scale_y_continuous(breaks = seq(0, 100, 10), minor_breaks = seq(0, 100, 5), limits = c(0, 80)) +
+    
+    scale_x_discrete(labels = c("EC","PC", "PL", "PH")) +
+    
+    geom_text(label = "a", x = 1, y = 71.629816, vjust = -1) +
+    geom_text(label = "b", x = 2, y = 9.000106, vjust = -1) +
+    geom_text(label = "b", x = 3, y = 11.026775, vjust = -1) +
+    geom_text(label = "b", x = 4, y = 6.891328, vjust = -1) +
+    
+    ggsave("figure_pupae.jpeg", width = 14, height = 8.7, units = "cm")
+  }
+```
+
+# Weight data
+```{r}
+dat.weight <-
+  rbind(
+    read_excel("C:/Users/Hannah/Desktop/Chicken project/chicken_weight_data.xlsx", sheet = "Rep 1"),
+    read_excel("C:/Users/Hannah/Desktop/Chicken project/chicken_weight_data.xlsx", sheet = "Rep 2"),
+    read_excel("C:/Users/Hannah/Desktop/Chicken project/chicken_weight_data.xlsx", sheet = "Rep 3"),
+    read_excel("C:/Users/Hannah/Desktop/Chicken project/chicken_weight_data.xlsx", sheet = "Rep 4")
+  ) %>%
+  mutate(ageWeeks = round(ageWeeks)) %>%
+  mutate_at(vars(Rep, ageWeeks, ID, Trt, Sex), as.factor) %>%
+  mutate(weightKg = weightLbs*0.453592)
+
+dat.weight.2 <- 
+  dat.weight %>%
+  filter(Rep == "1" & ageWeeks == "7" | Rep == "2" & ageWeeks == "8" | Rep == "3" & ageWeeks == "5")
+
+describe(dat.weight.2$weightKg)
+
+```
+
+# Behavior, pasture use, and weather data
+```{r}
+dat.behave <- 
+  read_excel("C:/Users/Hannah/Desktop/Chicken project/chicken_behavior_data.xlsx", 
+             col_types = c("date", "date", "text", 
+                           "text", "text", "text", "numeric", 
+                           "numeric", "numeric", "numeric", 
+                           "numeric", "numeric", "numeric", 
+                           "numeric", "numeric", "numeric", 
+                           "numeric", "numeric", "numeric", 
+                           "numeric", "numeric", "numeric", 
+                           "numeric", "numeric", "numeric", 
+                           "numeric", "numeric", "numeric", 
+                           "numeric", "numeric", "numeric")) %>%
+  mutate(Time = format(as.POSIXct(strptime(lubridate::round_date(as.POSIXct(Time, "%Y-%m-%d %H:%M:%S"), "15 minutes"), "%Y-%m-%d %H:%M:%S", tz = "")), format = "%H:%M:%S")) %>%
+  mutate(Date = format(as.POSIXct(strptime(Date, "%Y-%m-%d", tz = "")), format = "%m-%d")) %>%
+  mutate_at(vars(Daytime, Rep, Density, ID), as.factor) %>%
+  filter(Rep == "2" & Date >= "07-24" & Date <= "07-27" | Rep == "3" & Date >= "08-15" & Date <= "08-19") %>%
+  mutate(Travel = Walk + Run) %>%
+  mutate(Sitting = SocialActive + AloneActive) %>%
+  mutate(Sleeping = SocialAsleep + AloneAsleep)
+  
+
+dat.weather <- 
+  read_excel("C:/Users/Hannah/Desktop/Chicken project/weather_data.xlsx", 
+             col_types = c("date", "numeric", "numeric", 
+                           "numeric", "numeric", "numeric", 
+                           "numeric", "numeric", "numeric", 
+                           "numeric", "numeric")) %>%
+  mutate(Date = format(as.POSIXct(strptime(DateTime, "%Y-%m-%d %H:%M:%S", tz = "")), format = "%m-%d")) %>%
+  mutate(Time = format(as.POSIXct(strptime(DateTime, "%Y-%m-%d %H:%M:%S", tz = "")), format = "%H:%M:%S")) %>%
+  filter(Date >= "07-24" & Date <= "07-27" | Date >= "08-15" & Date <= "08-19") %>%
+  mutate(TempC = (TempF - 32) * 5/9) %>%
+  mutate(WindSpeedMPS = WindSpeedMPH * 0.44704) %>%
+  mutate(RHcorr = exp(0.00182 * Hum + 0.000018 * TempC * Hum) * (0.000054 * TempC^2 + 0.00192 * TempC - 0.0246) * (Hum - 30)) %>%
+  mutate(WScorr = (-6.56 / exp(1 / ((2.26 * WindSpeedMPS + 0.23) ^ (0.45*(2.9 + 0.00000114 * WindSpeedMPS^2.5 - log(2.26 * WindSpeedMPS + 0.33, base = 0.3)^-2))))) - 0.00566 * WindSpeedMPS^2 + 3.33) %>%
+  mutate(RADcorr = 0.0076 * SolarRadWm2 - 0.00002 * SolarRadWm2 * TempC + 0.00005 * TempC^2 * sqrt(SolarRadWm2) + 0.1 * TempC - 2) %>%
+  mutate(CCI = TempC + RHcorr + WScorr + RADcorr) %>%
+  dplyr::select(c(Date, Time, CCI, TempC, Hum, WindSpeedMPS, SolarRadWm2))
+
+dat.behave <- 
+  merge(dat.weather, dat.behave, by = c("Date", "Time"))
+
+
+#pasture use data
+dat.pasture <- 
+  read_excel("C:/Users/Hannah/Desktop/Chicken project/pasture_use_data.xlsx", 
+             col_types = c("date", "date", "text", 
+                           "date", "numeric", "text", "numeric", 
+                           "numeric", "numeric", "numeric")) %>%
+  mutate(Date = format(as.POSIXct(strptime(Date, "%Y-%m-%d", tz = "")), format = "%m-%d")) %>%
+  mutate(Time = format(as.POSIXct(strptime(lubridate::round_date(as.POSIXct(Time, "%Y-%m-%d %H:%M:%S"), "15 minutes"), "%Y-%m-%d %H:%M:%S", tz = "")), format = "%H:%M:%S")) %>%
+  filter(Rep == "2" & Date >= "07-24" & Date <= "07-27" | Rep == "3" & Date >= "08-15" & Date <= "08-19") %>%
+  mutate(PercOutside = BirdsOutside/Total*100) %>%
+  mutate_at(vars(Daytime, Rep, Density), as.factor)
+  
+dat.pasture <- merge(dat.weather, dat.pasture, by = c("Date", "Time"))
+```
+
+## Descriptive
+```{r}
+#pasture use 
+describe(dat.pasture$CCI)
+describe(dat.pasture$TempC)
+describe(dat.pasture$Hum)
+describe(dat.pasture$SolarRadWm2)
+describe(dat.pasture$WindSpeedMPS)
+
+#behavior
+describe(dat.behave$CCI)
+describe(dat.behave$TempC)
+describe(dat.behave$Hum)
+describe(dat.behave$SolarRadWm2)
+describe(dat.behave$WindSpeedMPS)
+```
+
+## Model for pasture use
+```{r}
+#correlations
+cor.test(~ CCI + PercOutside, method = "spearman", alternative = "two.sided", data = dat.pasture)
+
+cor.test(~ TempC + PercOutside, method = "spearman", alternative = "two.sided", data = dat.pasture)
+
+cor.test(~ Hum + PercOutside, method = "spearman", alternative = "two.sided", data = dat.pasture)
+
+cor.test(~ SolarRadWm2 + PercOutside, method = "spearman", alternative = "two.sided", data = dat.pasture)
+
+cor.test(~ WindSpeedMPS + PercOutside, method = "spearman", alternative = "two.sided", data = dat.pasture)
+
+#model
+model.pasture <- 
+  glmmTMB(
+    cbind(BirdsOutside, Total - BirdsOutside) ~ SolarRadWm2 + Density + Rep + (1|Density:Rep), 
+    family = betabinomial(),
+    verbose = F, 
+    REML = F,
+    data = dat.pasture
+  )
+
+#chi-square tests
+car::Anova(model.pasture)
+
+#summary
+summary(model.pasture)
+
+confint(model.pasture)
+
+#LSMs
+emmeans(model.pasture, ~1, type = "response")
+emmeans(model.pasture, ~1, at = list(SolarRadWm2 = 152), type = "response")
+emmeans(model.pasture, ~1, at = list(SolarRadWm2 = 676), type = "response")
+```
+
+## Model for time budget
+```{r}
+#correlations
+cor.test(~ CCI + Sitting, method = "spearman", alternative = "two.sided", data = dat.behave)
+
+cor.test(~ TempC + Sitting, method = "spearman", alternative = "two.sided", data = dat.behave)
+
+cor.test(~ Hum + Sitting, method = "spearman", alternative = "two.sided", data = dat.behave)
+
+cor.test(~ SolarRadWm2 + Sitting, method = "spearman", alternative = "two.sided", data = dat.behave)
+
+cor.test(~ WindSpeedMPS + Sitting, method = "spearman", alternative = "two.sided", data = dat.behave)
+
+cor.test(~ Sleeping + Travel, method = "spearman", alternative = "two.sided", data = dat.behave)
+
+
+#standing
+model.stand <- 
+  glmmTMB(
+    cbind(Stand, 60 - Stand) ~ CCI + Density + Rep + (1|Density:Rep) + (1|ID:Rep),
+    family = betabinomial(),
+    verbose = F, 
+    REML = F,
+    data = dat.behave
+  )
+
+#chi-square tests
+car::Anova(model.stand)
+
+#summary
+summary(model.stand)
+confint(model.stand)
+
+#LSMs
+emmeans(model.stand, ~1, type = "response")
+emmeans(model.stand, ~1, at = list(CCI = 16), type = "response")
+emmeans(model.stand, ~1, at = list(CCI = 39), type = "response")
+
+emmeans(model.stand, "Rep", type = "response")
+
+#pairwise for rep
+confint(contrast(emmeans(model.stand, "Rep", type = "response", transform = "log"), ratio = T, method = "pairwise"))
+
+#p-values
+contrast(emmeans(model.stand, "Rep", type = "response", transform = "log"), ratio = T, method = "pairwise")
+
+
+
+#traveling
+model.travel <- 
+  glmmTMB(
+    cbind(Walk + Run, 60 - Walk + Run) ~ CCI + Density + Rep + (1|Density:Rep) + (1|ID:Rep), 
+    family = betabinomial(),
+    verbose = F, 
+    REML = F,
+    data = dat.behave
+  )
+
+#chi-square tests
+car::Anova(model.travel)
+
+#summary
+summary(model.travel)
+
+#LSMs
+emmeans(model.travel, ~1, type = "response")
+
+
+
+#sitting
+model.sit <- 
+  glmmTMB(
+    cbind(SocialActive + AloneActive, 60 - SocialActive + AloneActive) ~ CCI + Density + Rep + (1|Density:Rep) + (1|ID:Rep), 
+    family = betabinomial(),
+    verbose = F, 
+    REML = F,
+    data = dat.behave
+  )
+
+
+#chi-square tests
+car::Anova(model.sit)
+
+#summary
+summary(model.sit)
+confint(model.sit)
+
+#LSMs
+emmeans(model.sit, ~1, type = "response")
+emmeans(model.sit, "Rep", type = "response")
+
+#pairwise for rep
+confint(contrast(emmeans(model.sit, "Rep", type = "response", transform = "log"), ratio = T, method = "revpairwise"))
+
+#p-values
+contrast(emmeans(model.sit, "Rep", type = "response", transform = "log"), ratio = T, method = "revpairwise")
+
+
+
+
+#asleep
+model.asleep <- 
+  glmmTMB(
+    cbind(SocialAsleep + AloneAsleep, 60 - SocialAsleep + AloneAsleep) ~ CCI + Density + Rep + (1|Density:Rep) + (1|ID:Rep), 
+    family = betabinomial(),
+    verbose = F, 
+    REML = F,
+    data = dat.behave
+  )
+
+#chi-square tests
+car::Anova(model.asleep)
+
+#summary
+summary(model.asleep)
+confint(model.asleep)
+
+#LSMs
+emmeans(model.asleep, ~1, type = "response")
+emmeans(model.asleep, ~1, at = list(CCI = 16), type = "response")
+emmeans(model.asleep, ~1, at = list(CCI = 39), type = "response")
+```
+
+### Time budget plot
+```{r}
+#predict Y
+predict.stand <- 
+  emmip(
+    model.stand, 
+    ~ CCI,
+    at = list(CCI = seq(16, 39, by = 1)),
+    CIs = TRUE, 
+    plotit = FALSE, 
+    type = "response",
+    level = .95
+  ) %>%
+  mutate(Behavior = "Stand")
+
+predict.travel <- 
+  emmip(
+    model.travel, 
+    ~ CCI,
+    at = list(CCI = seq(16, 39, by = 1)),
+    CIs = TRUE, 
+    plotit = FALSE, 
+    type = "response",
+    level = .95
+  ) %>%
+  mutate(Behavior = "Travel")
+
+predict.sit <- 
+  emmip(
+    model.sit, 
+    ~ CCI,
+    at = list(CCI = seq(16, 39, by = 1)),
+    CIs = TRUE, 
+    plotit = FALSE, 
+    type = "response",
+    level = .95
+  ) %>%
+  mutate(Behavior = "Sit")
+
+predict.asleep <- 
+  emmip(
+    model.asleep, 
+    ~ CCI,
+    at = list(CCI = seq(16, 39, by = 1)),
+    CIs = TRUE, 
+    plotit = FALSE, 
+    type = "response",
+    level = .95
+  ) %>%
+  mutate(Behavior = "Sleep")
+
+predict <- 
+  rbind(predict.stand, predict.travel, predict.sit, predict.asleep)
+
+#effect of CCI
+{
+  ggplot(data = predict, 
+         aes(x = CCI, y = yvar*100, color = Behavior, linetype = Behavior)) + 
+    
+    scale_color_jama() +
+    
+    scale_fill_jama() +
+    
+    geom_line(size = .5) +
+    
+    geom_ribbon(aes(ymin = LCL*100, ymax = UCL*100, fill = Behavior), 
+                alpha = 0.1, 
+                inherit.aes = T,
+                colour = NA) +
+    
+    labs(
+      x = "CCI, \u00B0C", 
+      y = "Time, %"
+    ) +
+    
+    scale_y_continuous(breaks = seq(0, 80, 10), minor_breaks = seq(0, 80, 5), limits = c(0, NA)) +
+
+    ggsave("figure_time_budget_vs_CCI.jpeg", width = 14, height = 8.7, units = "cm")
+  }
+```
+
+## Correlations for binomial behaviors
+```{r}
+dat.behave.1 <-
+  dat.behave %>%
+  dplyr::select(-c(Time, ID, Stand:AloneAsleep)) %>%
+  group_by(Date, Daytime, Rep, Density) %>%
+  summarise_at(vars(CCI, TempC, Hum, WindSpeedMPS, SolarRadWm2), funs(mean(.))) 
+
+dat.behave.2 <-
+  dat.behave %>%
+  dplyr::select(-c(Time, ID, Stand:AloneAsleep, Preen, Pant)) %>%
+  group_by(Date, Daytime, Rep, Density) %>%
+  summarise_at(vars(Forage), funs(sum(.)))
+
+
+countFunction <- function(countIfNotNA){sum(!is.na(countIfNotNA))}
+
+dat.behave.3 <-
+  dat.behave %>%
+  dplyr::select(-c(Time, ID, Stand:AloneAsleep)) %>%
+  group_by(Date, Daytime, Rep, Density) %>%
+  summarise_at(vars(Forage), funs(countFunction(.))) %>%
+  rename(Birds = Forage)
+
+dat.behave.events <-
+  merge(
+    merge(dat.behave.1, dat.behave.2, by = c("Date", "Daytime", "Rep", "Density")),
+    dat.behave.3, by = c("Date", "Daytime", "Rep", "Density")
+  ) %>%
+  mutate(Forage = Forage/Birds)
+  
+
+
+#correlations for foraging
+cor.test(~ CCI + Forage, method = "spearman", alternative = "two.sided", data = dat.behave.events)
+
+cor.test(~ TempC + Forage, method = "spearman", alternative = "two.sided", data = dat.behave.events)
+
+cor.test(~ Hum + Forage, method = "spearman", alternative = "two.sided", data = dat.behave.events)
+
+cor.test(~ SolarRadWm2 + Forage, method = "spearman", alternative = "two.sided", data = dat.behave.events)
+
+cor.test(~ WindSpeedMPS + Forage, method = "spearman", alternative = "two.sided", data = dat.behave.events)
+
+
+#forage
+model.forage <- 
+  glmmTMB(
+    cbind(Forage, 1 - Forage) ~ Density + Rep + (1|Density:Rep),
+    family = betabinomial(),
+    verbose = F, 
+    REML = F,
+    data = dat.behave.events
+  )
+
+#chi-square tests
+car::Anova(model.forage)
+
+#LSMs
+emmeans(model.forage, ~1, type = "response")
+```
+
+# Climate 
+## Plot
+```{r}
+dat.climate <- 
+  read_excel("C:/Users/Hannah/Desktop/Chicken project/weather_data.xlsx", 
+             col_types = c("date", "numeric", "numeric", 
+                           "numeric", "numeric", "numeric", 
+                           "numeric", "numeric", "numeric", 
+                           "numeric", "numeric")) %>%
+  mutate(Date = format(as.POSIXct(strptime(DateTime, "%Y-%m-%d %H:%M:%S", tz = "")), format = "%Y-%m-%d")) %>%
+  mutate(Time = format(as.POSIXct(strptime(DateTime, "%Y-%m-%d %H:%M:%S", tz = "")), format = "%H:%M:%S")) %>%
+  filter(Date >= "2018-06-21" & Date <= "2018-08-19") %>%
+  mutate(TempC = (TempF - 32) * 5/9) %>%
+  mutate(WindSpeedMPS = WindSpeedMPH * 0.44704) %>%
+  mutate(RHcorr = exp(0.00182 * Hum + 0.000018 * TempC * Hum) * (0.000054 * TempC^2 + 0.00192 * TempC - 0.0246) * (Hum - 30)) %>%
+  mutate(WScorr = (-6.56 / exp(1 / ((2.26 * WindSpeedMPS + 0.23) ^ (0.45*(2.9 + 0.00000114 * WindSpeedMPS^2.5 - log(2.26 * WindSpeedMPS + 0.33, base = 0.3)^-2))))) - 0.00566 * WindSpeedMPS^2 + 3.33) %>%
+  mutate(RADcorr = 0.0076 * SolarRadWm2 - 0.00002 * SolarRadWm2 * TempC + 0.00005 * TempC^2 * sqrt(SolarRadWm2) + 0.1 * TempC - 2) %>%
+  mutate(CCI = TempC + RHcorr + WScorr + RADcorr) %>%
+  mutate(Rainmm = RainIn / 0.0393701) %>%
+  dplyr::select(c(Date, Time, CCI, TempC, Hum, WindSpeedMPS, SolarRadWm2, Rainmm))
+
+dat.climate.mean <-
+  dat.climate %>%
+  dplyr::select(c(Date, CCI, TempC, Hum, WindSpeedMPS, SolarRadWm2)) %>%
+  group_by(Date) %>%
+  summarise_all(funs(mean(., na.rm = T)))
+
+dat.climate.min <-
+  dat.climate %>%
+  dplyr::select(c(Date, CCI, TempC)) %>%
+  group_by(Date) %>%
+  summarise_all(funs(min(., na.rm = T))) %>%
+  rename(CCIMin = CCI) %>%
+  rename(TempCMin = TempC)
+
+dat.climate.max <-
+  dat.climate %>%
+  dplyr::select(c(Date, CCI, TempC)) %>%
+  group_by(Date) %>%
+  summarise_all(funs(max(., na.rm = T))) %>%
+  rename(CCIMax = CCI) %>%
+  rename(TempCMax = TempC)
+
+dat.climate.rain <-
+  dat.climate %>%
+  dplyr::select(c(Date, Rainmm)) %>%
+  group_by(Date) %>%
+  summarise_all(funs(sum(.)))
+
+dat.climate.2 <- 
+  merge(
+    merge(
+      merge(
+        dat.climate.mean, dat.climate.min, by = "Date"
+      ), 
+      dat.climate.max, by = "Date"
+    ), 
+    dat.climate.rain, by = "Date"
+  ) %>%
+  mutate(Date = as.Date(Date))
+
+
+dat.climate.temp <-
+dat.climate.2 %>%
+  dplyr::select(c(Date, CCI, TempC, CCIMin, TempCMin, CCIMax, TempCMax)) %>%
+  gather("Var1", "Mean", 2:3) %>%
+  gather("Var2", "Minimum", 2:3) %>%
+  gather("Var3", "Maximum", 2:3) %>%
+  mutate(Var = ifelse(Var1 == "CCI" | Var2 == "CCIMin"| Var3 == "CCIMax", "CCI", 
+                      ifelse(Var1 == "TempC"| Var2 == "TempCMin"| Var3 == "TempCMax", "Ambient temperature", NA
+                             ))) %>%
+  dplyr::select(-c(Var1, Var2, Var3))
+
+remove(dat.climate.max, dat.climate.mean, dat.climate.min, dat.climate.rain)
+
+#temperature plot
+{
+temp.plot <- 
+    ggplot(dat.climate.temp, aes(Date, Mean, color = Var)) +
+    
+    geom_point(alpha = 1, show.legend = F, size = .5) +
+    
+    geom_smooth(se = F, size = .5) +
+    
+    geom_ribbon(aes(ymin = Minimum, ymax = Maximum, fill = Var), 
+                alpha = 0.3, 
+                inherit.aes = T,
+                colour = NA) +
+    
+   scale_color_npg() +
+    
+    scale_fill_npg() +
+    
+    theme_bw() +
+    
+    labs(
+      x = NULL, 
+      y = "Average temperature, \u00B0C"
+    ) +
+    
+    theme(
+      legend.position = c(.8, .93),
+      legend.direction = "vertical",
+      plot.margin = margin(0, 0, 3, 0),
+      legend.title = element_blank(),
+      legend.background = element_blank()
+    ) +
+    
+    scale_x_date(
+      date_labels = "%m-%d", 
+      date_breaks = "1 week",
+      date_minor_breaks = "1 day"
+    ) +
+    
+    scale_y_continuous(
+      breaks = seq(10, 50, 10),
+      limits = c(10, 51)
+      ) +
+    
+    theme(
+      legend.key.width = unit(.5, "cm"),
+      legend.text = element_text(size = 8),
+      axis.text = element_text(size = 9),
+      axis.title = element_text(size = 8)
+    )
+}
+
+
+
+#precipitation plot
+{    
+  precip.plot <-
+      ggplot(dat.climate.2, aes(Date, Rainmm, color = Rainmm)) +
+    
+    geom_point(alpha = 1, show.legend = F, color = "gray40", size = .5) +
+    
+    geom_smooth(se = F, color = "gray40", size = .5) +
+    
+    theme_bw() +
+    
+    labs(
+      x = "Date", 
+      y = "Total precipitation, mm"
+    ) +
+    
+    theme(
+      legend.position = c(.8, .93),
+      legend.direction = "vertical",
+      plot.margin = margin(3, 0, 0, 0),
+      legend.title = element_blank(),
+      legend.background = element_blank()
+    ) +
+    
+    scale_x_date(
+      date_labels = "%m-%d", 
+      date_breaks = "1 week",
+      date_minor_breaks = "1 day"
+    ) +
+    
+    scale_y_continuous(
+      breaks = seq(0, 120, 40),
+      limits = c(0, NA)
+    ) +
+    
+    theme(
+      axis.text = element_text(size = 9),
+      axis.title = element_text(size = 8))
+}
+
+
+
+
+#extract legends
+legend <- 
+  get_legend(
+    temp.plot + theme(legend.box.margin = margin(t = 20, r = 60, b = 0, l = -10))
+  )
+
+#merge plots together
+plot <-
+  cowplot::plot_grid(
+    NULL,
+    temp.plot + theme(legend.position = "none"), 
+    NULL,
+    precip.plot, 
+    labels = c("A", "", "B", ""), 
+    nrow = 2,
+    ncol = 2,
+    rel_widths = c(.05, 1),
+    align = "hv") 
+
+#add legend
+plot_grid(plot, legend, rel_widths = c(3, 1), hjust = 0) +
+
+    ggsave("figure_weather.jpeg", width = 17, height = 8.7, units = "cm")
+```
+
+## Explore when cold weather occured
+```{r}
+#in first 24 h
+dat.24h <-
+dat.climate %>%
+  filter(Date >= "2018-06-21" & Date <= "2018-06-25" | Date >= "2018-07-24" & Date <= "2018-07-27" | Date >= "2018-08-15" & Date <= "2018-08-19") %>%
+  filter(Date == "2018-08-15" & Time >= "12:00:00" | Date == "2018-08-16" & Time <= "12:00:00") %>%
+  filter(TempC <= 16)
+
+#hours of cold
+nrow(dat.24h)*15/60
+
+#in first 24 to 48 h
+dat.48h <-
+dat.climate %>%
+  filter(Date >= "2018-06-21" & Date <= "2018-06-25" | Date >= "2018-07-24" & Date <= "2018-07-27" | Date >= "2018-08-15" & Date <= "2018-08-19") %>%
+  filter(Date == "2018-08-16" & Time >= "12:00:00" | Date == "2018-08-17" & Time <= "12:00:00") %>%
+  filter(TempC <= 16)
+
+#hours of cold
+nrow(dat.48h)*15/60
+
+
+```
+
+
+
+
